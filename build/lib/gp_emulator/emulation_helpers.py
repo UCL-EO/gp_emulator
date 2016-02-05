@@ -5,6 +5,7 @@ import scipy.stats as ss
 from lhd import lhd
 from GaussianProcess import GaussianProcess
 from multivariate_gp import MultivariateEmulator
+from commonmultivariate_gp import CommonMultivariateEmulator
 
 def create_training_set ( parameters, minvals, maxvals, n_train=200 ):
     """Creates a traning set for a set of parameters specified by 
@@ -50,7 +51,7 @@ def create_validation_set ( distributions, n_validate=500 ):
 
 def create_emulator_validation ( f_simulator, parameters, minvals, maxvals, 
                                 n_train, n_validate, do_gradient=True, 
-                                thresh=0.98, n_tries=5, args=(), n_procs=None ):
+                                thresh=0.98, n_tries=5, common_hyp=False,args=(), n_procs=None ):
 
 
     """A method to create an emulator, given the simulator function, the
@@ -81,6 +82,8 @@ def create_emulator_validation ( f_simulator, parameters, minvals, maxvals,
     n_tries: int
         The number of tries in the GP hyperparameter stage. The more the better,
         but also the longer it will take.
+    common_hyp: bool
+        Set True to make hyperparameters common to all bands/PCs
     args: tuple
         A list of extra arguments to the model
     do_gradient: Boolean
@@ -126,7 +129,11 @@ def create_emulator_validation ( f_simulator, parameters, minvals, maxvals,
         gp = GaussianProcess( samples, training_set )
         gp.learn_hyperparameters( n_tries = n_tries )
     else:
-        gp = MultivariateEmulator(X=training_set , \
+        if common_hyp:
+            gp = CommonMultivariateEmulator(X=training_set , \
+                        y=samples, thresh=thresh, n_tries=n_tries )
+        else:
+            gp = MultivariateEmulator(X=training_set , \
                         y=samples, thresh=thresh, n_tries=n_tries )
     
     X = [ gp.predict ( np.atleast_2d(x) ) 

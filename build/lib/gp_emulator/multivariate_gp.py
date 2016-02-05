@@ -41,7 +41,7 @@ class MultivariateEmulator ( object ):
     def __init__ ( self, dump=None, X=None, y=None, 
                   hyperparams=None, 
                   model="", sza=0, vza=0, raa=0,
-                  thresh=0.98, n_tries=5 ):
+                  thresh=0.98, n_tries=5,common_hyp=False ):
         """Constructor
         
         The constructor takes an array of model outputs `X`, and a vector
@@ -63,11 +63,14 @@ class MultivariateEmulator ( object ):
             The modelled output array for training
         y: array (N_train, N_param )
             The corresponding training parameters for `X`
-        hyperparams: array ( N_params + 2, N_PCs )
+        hyperparams: array ( N_params + 2, N_PCs ) if common_hyp == False
+                     array ( N_params + 2* N_PCs, 1 ) if common_hyp == False
             The hyperparameters for the relevant GPs
         thresh: float
             The threshold at where to cutoff the percentage of 
             variance explained.
+        common_hyp: bool
+            Set True to make structural hyper parameters common
         """
         if dump is not None:
             if X is None and y is None:
@@ -80,6 +83,11 @@ class MultivariateEmulator ( object ):
                     thresh = f[group+'/thresh'].value
                     basis_functions = f[group+"/basis_functions"][:,:]
                     n_pcs = f[group+"/n_pcs"].value
+                    try:
+                        common_hyp = f[group+'/common_hyp'].value
+                    except:
+                        common_hyp = False
+
                     f.close()
 		elif dump.find(".npz"):
                     f =  np.load ( dump ) 
@@ -87,6 +95,11 @@ class MultivariateEmulator ( object ):
                     y = f[ 'y' ]
                     hyperparams = f[ 'hyperparams' ]
                     thresh = f[ 'thresh' ]
+                    try:
+                        common_hyp = f['common_hyp']
+                    except:
+                        common_hyp = False
+
                     if dict(f).has_key ( "basis_functions" ):
                         basis_functions = f[ 'basis_functions' ]
                         n_pcs = f[ 'n_pcs' ]
@@ -101,6 +114,11 @@ class MultivariateEmulator ( object ):
                     hyperparams = f[group+'/hyperparams'][:,:]
                     thresh = f[group+'/thresh'].value
                     basis_functions = f[group+"/basis_functions"][:,:]
+                    try:
+                        common_hyp = f[group+'/common_hyp'].value
+                    except:
+                        common_hyp = False
+
                     n_pcs = f[group+"/n_pcs"].value
                     f.close()
             else:
@@ -127,11 +145,17 @@ class MultivariateEmulator ( object ):
 
         self.n_pcs = n_pcs
         self.basis_functions = basis_functions
-        
+
         if hyperparams is not None:
-            assert ( y.shape[1] +2 == hyperparams.shape[0] ) and \
-                (  self.n_pcs == hyperparams.shape[1] )
-        self.train_emulators ( X, y, hyperparams=hyperparams, n_tries=n_tries )
+            hyperparams = np.atleast_2d(hyperparams)
+            if common_hyp:
+                # y.shape[1] + 2 * n_pcs
+                assert ( y.shape[1] +2*self.n_pcs == hyperparams.shape[0] ) and \
+                    (  1 == hyperparams.shape[1] )
+            else:
+                assert ( y.shape[1] +2 == hyperparams.shape[0] ) and \
+                    (  self.n_pcs == hyperparams.shape[1] )
+        self.train_emulators ( X, y, common_hyp=common_hyp, hyperparams=hyperparams, n_tries=n_tries )
 
 
     def dump_emulator ( self, fname, model_name, sza, vza, raa ):
@@ -198,7 +222,7 @@ class MultivariateEmulator ( object ):
         self.basis_functions = V [ pcnt_var_explained <= thresh ]
         self.n_pcs = np.sum ( pcnt_var_explained <= thresh )
     
-    def train_emulators ( self, X, y, hyperparams, n_tries=2 ):
+    def train_emulators ( self, X, y, hyperparams, common_hyp=False, n_tries=2 ):
         """Train the emulators
         
         This sets up the required emulators. If necessary (`hypeparams` 
@@ -208,23 +232,74 @@ class MultivariateEmulator ( object ):
             The modelled output array for training
         y: array (N_train, N_param )
             The corresponding training parameters for `X`
+        common_hyp: bool
+            Set True for common structural hyperparameters
         hyperparams: array ( N_params + 2, N_PCs )
             The hyperparameters for the relevant GPs
+                  or array ( N_params + 2 * N_PCs, 1 ) if common_hyp
         """
         self.emulators = []
         train_data = self.compress ( X )
-        self.hyperparams = np.zeros ( ( 2 + y.shape[1], self.n_pcs ) )
+        self.hyperparams = np.atleast_2d(np.zeros ( ( 2 + y.shape[1], self.n_pcs ) ))
+
+        # we have n_pcs emulators to load
+        # for common_hyp, train_data is also common
         for i in xrange ( self.n_pcs ):
-            
             self.emulators.append ( GaussianProcess ( np.atleast_2d( y), \
                 train_data[i] ) ) 
             if hyperparams is None:
-                print "\tFitting GP for basis function %d" % i
-                self.hyperparams[ :, i] = \
-                    self.emulators[i].learn_hyperparameters ( n_tries = n_tries )[1]
+                if not common_hyp:
+                    print "\tFitting GP for basis function %d" % i
+                    self.hyperparams[ :, i] = \
+                        self.emulators[i].learn_hyperparameters ( n_tries = n_tries )[1]
             else:
-                self.hyperparams[:,i] = hyperparams[:,i]
+                if common_hyp:
+                    self.hyperparams[:,i] = np.append(hyperparams[:y.shape[1],1],\
+                                                  hyperparams[y.shape[1]+2*i:y.shape[1]+2*i+1,1])
+                else:
+                    self.hyperparams[:,i] = hyperparams[:,i]
+
                 self.emulators[i]._set_params ( hyperparams[:, i] )
+        if (hyperparams is None) and common_hyp: 
+            # we need to train in a different way using all of self.emulators
+            self.hyperparams = self.learn_hyperparameters_common(n_tries = n_tries)[1]
+
+    def learn_hyperparameters_common ( self, n_tries=15, verbose=False ):
+        """User method to fit the hyperparameters of the model, using
+        random initialisations of parameters. The user should provide
+        a number of tries (e.g. how many random starting points to
+        avoid local minima), and whether it wants lots of information
+        to be reported back.
+
+        The merit function is fitted using common theta terms
+
+        Parameters
+        -----------
+        n_tries: int, optional
+                Number of random starting points
+        verbose: flag, optional
+                How much information to parrot (e.g. convergence of
+                the minimisation algorithm)
+
+        """
+        hyperparams = self.hyperparams
+        nparam = hyperparams.shape[0] - 2
+        n_pcs  = hyperparams.shape[1]
+
+        log_like = []
+        params = []
+        theta_all =  5.*(np.random.rand(n_tries, self.D+2*self.n_pcs) - 0.5)
+
+        for theta in theta_all:
+            T = self._learn_common ( self.n_pcs,theta ,verbose )
+            log_like.append ( T[1] )
+            params.append ( T[0] )
+        log_like = np.array ( log_like )
+        idx = np.argsort( log_like )[0]
+        print "After %d, the minimum cost was %e" % ( n_tries, log_like[idx] )
+        self._set_params ( params[idx])
+        return (log_like[idx], params[idx] )
+
 
     def hessian ( self, x ):
         """A method to approximate the Hessian. This method builds on the fact

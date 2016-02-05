@@ -179,6 +179,49 @@ class GaussianProcess:
             
         return theta_opt
 
+    def _learn_common ( self, npcs, theta0, verbose ):
+        """The training method, called ''learn'' to keep up with the
+        trendy Machine Learning kids!
+        Takes an initial guess of the hyperparameters, and minimises
+        that through a gradient descent algorithm, using methods
+        ``likelihood`` and ``partial_devs`` to select hyperparameters
+        that result in a minimal log-likelihood.
+
+        Parameters
+        -----------
+        theta0: array
+                Hyperparameters for common set
+        verbose: flag
+                Whether to provide lots of information on the
+                minimiation. Useful to see whether its fitting or
+                not for some hairy problems.
+        """
+        # minimise self.loglikelihood (with self.partial_devs) to learn
+        # theta
+        from scipy.optimize import fmin_cg,fmin_l_bfgs_b
+        self._set_params ( theta0 )
+        if verbose:
+            iprint = 1
+        else:
+            iprint = -1
+        try:
+            #theta_opt = fmin_cg ( self.loglikelihood,
+            #        theta0, fprime = self.partial_devs, \
+            #        full_output=True, \
+            #        retall = 1, disp=1 )
+            theta_opt = fmin_l_bfgs_b(  self.loglikelihood, \
+                     theta0, fprime = self.partial_devs, \
+                     factr=0.1, pgtol=1e-20, iprint=iprint)
+        except np.linalg.LinAlgError:
+            warnings.warn ("Optimisation resulted in linear algebra error. " + \
+                "Returning last loglikelihood calculated, but this is fishy", \
+                    RuntimeWarning )
+            #theta_opt = [ self.current_theta, self.current_loglikelihood ]
+            theta_opt = [ self.current_theta, 9999]
+
+        return theta_opt
+
+
     def learn_hyperparameters ( self, n_tries=15, verbose=False ):
 	"""User method to fit the hyperparameters of the model, using
 	random initialisations of parameters. The user should provide
